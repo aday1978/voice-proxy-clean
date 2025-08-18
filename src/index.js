@@ -1,3 +1,4 @@
+// src/index.js
 import express from "express";
 import timeout from "connect-timeout";
 import { estateConfig, buildLoopUrl, fetchLoop, filterResults } from "./estate.js";
@@ -6,12 +7,13 @@ const app = express();
 app.use(express.json());
 app.use(timeout("10s"));
 
-app.get("/healthz", (req, res) => {
+// Health
+app.get("/healthz", (_req, res) => {
   res.send({ ok: true, service: "voice-proxy", env: process.env.NODE_ENV || "production" });
 });
 
-// DEBUG: show effective config (no key value)
-app.get("/debug/estate-config", (req, res) => {
+// Debug: show effective estate config (without leaking the key)
+app.get("/debug/estate-config", (_req, res) => {
   const cfg = estateConfig();
   res.send({
     baseUrl: cfg.baseUrl,
@@ -21,11 +23,11 @@ app.get("/debug/estate-config", (req, res) => {
   });
 });
 
-// DEBUG: call Loop directly using current env + args you pass
+// Debug: call Loop directly with your inputs (no filtering)
 app.post("/debug/loop/raw", async (req, res) => {
-  const { street = "", town = "", postcode = "", market = "sales", pageSize = 50 } = req.body || {};
-  const url = buildLoopUrl({ street, town, postcode, market, pageSize });
   try {
+    const { street = "", town = "", postcode = "", market = "sales", pageSize = 50 } = req.body || {};
+    const url = buildLoopUrl({ street, town, postcode, market, pageSize });
     const r = await fetchLoop(url);
     res.send({ ok: r.ok, status: r.status, url: r.url, size: r.size, sample: r.sample });
   } catch (e) {
@@ -33,23 +35,45 @@ app.post("/debug/loop/raw", async (req, res) => {
   }
 });
 
-// TOOL your bot uses
+// Tool used by your AI agent
 app.post("/tools/lookup_property", async (req, res) => {
-  const { street = "", town = "", postcode = "", market = "sales" } = req.body || {};
+  const started = Date.now();
   try {
-    const url = buildLoopUrl({ street, town, postcode, market, pageSize: 50 });
+    const { street = "", town = "", postcode = "", market = "sales", pageSize = 50 } = req.body || {};
+    const url = buildLoopUrl({ street, town, postcode, market, pageSize });
+
     const r = await fetchLoop(url);
-    if (!r.ok) {
-      return res.send({ ok: false, matched: 0, tool_success: false, source_url: r.url, http_status: r.status });
-    }
-    const properties = filterResults({ json: r.json, street, town });
-    res.send({ ok: true, matched: properties.length, properties, tool_success: true, source_url: r.url });
-  } catch {
-    res.send({ ok: false, matched: 0, properties: [], tool_success: false, error: "lookup_property_failed" });
+    const properties = filterResults(r.results, { street, town });
+
+    res.send({
+      ok: true,
+      matched: properties.length,
+      properties,
+      tool_success: true,
+      source_url: r.url,
+      took_ms: Date.now() - started
+    });
+  } catch (e) {
+    res.status(500).send({
+      ok: false,
+      matched: 0,
+      properties: [],
+      tool_success: false,
+      error: "lookup_property_failed",
+      took_ms: Date.now() - started
+    });
   }
 });
 
+// Version/debug info to confirm deployed code version
+app.get("/debug/version", (_req, res) => {
+  res.send({
+    env: process.env.NODE_ENV || "production",
+    commit: process.env.RENDER_GIT_COMMIT || process.env.COMMIT_SHA || "unknown"
+  });
+});
+
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, "0.0.0.0", () => {
+app.listen(PORT, () => {
   console.log(`listening on :${PORT}`);
 });
