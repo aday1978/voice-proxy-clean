@@ -1,3 +1,4 @@
+// src/estate.js
 import fetch from "node-fetch";
 
 export function estateConfig() {
@@ -34,40 +35,48 @@ export function buildLoopUrl({ market = "sales", street = "", town = "", postcod
   return u.toString();
 }
 
-export async function fetchLoop(url, { signal } = {}) {
+export async function fetchLoop(url) {
   const cfg = estateConfig();
-  const headers = { [cfg.keyHeader]: cfg.apiKey };
-  const res = await fetch(url, { headers, signal });
-  const text = await res.text();
-  const size = text.length;
-  const ok = res.ok;
-  let json = null;
-  try { json = JSON.parse(text); } catch {}
-  return { ok, status: res.status, size, json, sample: json?.results?.slice?.(0, 2) ?? json, url };
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), cfg.timeout_ms);
+
+  const res = await fetch(url, {
+    headers: { [cfg.keyHeader]: cfg.apiKey },
+    signal: controller.signal
+  }).catch(err => ({ ok: false, status: 500, err }));
+
+  clearTimeout(id);
+
+  if (!res.ok) {
+    throw new Error(`Loop error ${res.status}: ${res.statusText || ""}`);
+  }
+  const json = await res.json();
+  return {
+    ok: true,
+    status: res.status,
+    url,
+    size: json.results?.length || 0,
+    sample: json.results?.slice(0, 2) || [],
+    results: json.results || []
+  };
 }
 
-export function filterResults({ json, street = "", town = "" }) {
-  const s = (street || "").trim().toLowerCase();
-  const t = (town || "").trim().toLowerCase();
-  const rows = Array.isArray(json?.results) ? json.results : [];
-
-  const out = rows
-    .map(r => ({
-      refId: String(r.refId ?? r.salesLifecycleId ?? r.lettingsLifecycleId ?? ""),
-      address: r.address || [r.propertyStreet, r.propertyLocality, r.propertyTown, r.propertyPostcode].filter(Boolean).join(", "),
-      street: String(r.propertyStreet || "").trim(),
-      town: String(r.propertyTown || "").trim(),
-      postcode: String(r.propertyPostcode || "").trim(),
-      propertyTypeText: r.propertyTypeText,
-      price: r.price,
-      teamEmail: r.teamEmail,
-      teamPhone: r.teamPhone,
-      responsibleAgentName: r.responsibleAgentName
-    }))
-    .filter(r =>
-      r.street.toLowerCase().includes(s) &&
-      r.town.toLowerCase().includes(t)
-    );
-
-  return out;
+export function filterResults(results = [], { street = "", town = "" } = {}) {
+  const s = street.toLowerCase();
+  const t = town.toLowerCase();
+  return results.filter(r =>
+    (!s || (r.propertyStreet || "").toLowerCase().includes(s)) &&
+    (!t || (r.propertyTown || "").toLowerCase().includes(t))
+  ).map(r => ({
+    refId: r.refId,
+    address: r.address,
+    street: r.propertyStreet,
+    town: r.propertyTown,
+    postcode: r.propertyPostcode,
+    propertyTypeText: r.propertyTypeText,
+    price: r.price,
+    teamEmail: r.teamEmail,
+    teamPhone: r.teamPhone,
+    responsibleAgentName: r.responsibleAgentName
+  }));
 }
