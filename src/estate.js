@@ -14,17 +14,16 @@ export function buildLoopUrl({ market = "sales", street = "", town = "", postcod
   const path = market === "lettings" ? "lettings-properties" : "sales-properties";
   const u = new URL(`${cfg.baseUrl.replace(/\/$/, "")}/${path}`);
 
-  // Always constrain to “OnMarket” and page size
   u.searchParams.set("marketingStatus", "OnMarket");
   u.searchParams.set("pageSize", String(pageSize));
 
   if (market === "lettings") {
-    // Lettings: fielded params only (Loop is strict here)
+    // Lettings works best with fielded params
     if (street)   u.searchParams.set("propertyStreet", street);
     if (town)     u.searchParams.set("propertyTown", town);
     if (postcode) u.searchParams.set("propertyPostcode", postcode);
   } else {
-    // Sales: searchText works best (and can still include postcode)
+    // Sales works great with searchText
     const bits = [street, town, postcode].filter(Boolean).join(" ").trim();
     if (bits) u.searchParams.set("searchText", bits);
   }
@@ -33,27 +32,28 @@ export function buildLoopUrl({ market = "sales", street = "", town = "", postcod
 
 export async function fetchLoop(url) {
   const cfg = estateConfig();
-  const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), cfg.timeout_ms);
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), cfg.timeout_ms);
 
-  const res = await fetch(url, {
+  const r = await fetch(url, {
+    method: "GET",
     headers: { [cfg.keyHeader]: cfg.apiKey },
-    signal: controller.signal
-  }).catch(err => ({ ok: false, status: 500, err }));
+    signal: ctrl.signal
+  }).catch((e) => {
+    throw new Error(`Loop fetch failed: ${e.message || e}`);
+  });
+  clearTimeout(to);
 
-  clearTimeout(id);
-
-  if (!res || !res.ok) {
-    const status = res?.status ?? 500;
-    const text = res?.statusText ?? "Fetch failed";
-    throw new Error(`Loop error ${status}: ${text}`);
+  if (!r.ok) {
+    const t = await r.text().catch(() => "");
+    throw new Error(`Loop error ${r.status}: ${t || r.statusText}`);
   }
 
-  const json = await res.json();
+  const json = await r.json();
   const results = Array.isArray(json.results) ? json.results : [];
   return {
     ok: true,
-    status: res.status,
+    status: r.status,
     url,
     size: results.length,
     sample: results.slice(0, 2),
@@ -61,25 +61,53 @@ export async function fetchLoop(url) {
   };
 }
 
-export function filterResults(results = [], { street = "", town = "" } = {}) {
-  const s = street.toLowerCase();
-  const t = town.toLowerCase();
+// strict filter by what the caller said
+export function filterResults(results, { street = "", town = "", postcode = "" } = {}) {
+  const s = (street || "").trim().toLowerCase();
+  const t = (town || "").trim().toLowerCase();
+  const p = (postcode || "").trim().toLowerCase();
 
-  return results
-    .filter(r =>
-      (!s || (r.propertyStreet || "").toLowerCase().includes(s)) &&
-      (!t || (r.propertyTown || "").toLowerCase().includes(t))
-    )
-    .map(r => ({
-      refId: r.refId,
-      address: r.address,
-      street: r.propertyStreet,
-      town: r.propertyTown,
-      postcode: r.propertyPostcode,
-      propertyTypeText: r.propertyTypeText,
-      price: r.price,
-      teamEmail: r.teamEmail,
-      teamPhone: r.teamPhone,
-      responsibleAgentName: r.responsibleAgentName
-    }));
+  return results.filter((r) => {
+    const streetOk  = s ? (r.propertyStreet || "").toLowerCase().includes(s) : true;
+    const townOk    = t ? (r.propertyTown   || "").toLowerCase().includes(t) : true;
+    const postOk    = p ? (r.propertyPostcode || "").toLowerCase().includes(p) : true;
+    return streetOk && townOk && postOk;
+  }).map((r) => ({
+    refId: r.refId,
+    address: r.address ||
+      [r.propertyStreet, r.propertyLocality, r.propertyTown, r.propertyPostcode].filter(Boolean).join(", "),
+    street: r.propertyStreet || "",
+    town: r.propertyTown || "",
+    postcode: r.propertyPostcode || "",
+    propertyTypeText: r.propertyTypeText,
+    price: r.price,
+    teamEmail: r.teamEmail,
+    teamPhone: r.teamPhone,
+    responsibleAgentName: r.responsibleAgentName,
+  }));
+}
+
+// One-shot lookup
+export async function lookupProperty({ street = "", town = "", postcode = "", market = "sales", pageSize = 50 } = {}) {
+  const url = buildLoopUrl({ street, town, postcode, market, pageSize });
+  const res = await fetchLoop(url);
+  const filtered = filterResults(res.results, { street, town, postcode });
+  return { url, filtered };
+}
+
+// Try lettings, then fall back to sales if nothing found
+export async function lookupWithFallback({ street = "", town = "", postcode = "" } = {}) {
+  // 1) lettings strict
+  const lett = await lookupProperty({ street, town, postcode, market: "lettings" });
+  if (lett.filtered.length > 0) {
+    return { market: "lettings", source_url: lett.url, properties: lett.filtered, note: "lettings_strict" };
+  }
+
+  // 2) sales text search
+  const sales = await lookupProperty({ street, town, postcode, market: "sales" });
+  if (sales.filtered.length > 0) {
+    return { market: "sales", source_url: sales.url, properties: sales.filtered, note: "fallback_to_sales" };
+  }
+
+  return { market: "lettings", source_url: lett.url, properties: [], note: "no_matches" };
 }
