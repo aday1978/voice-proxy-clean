@@ -1,74 +1,68 @@
 // src/index.js
 import express from "express";
 import timeout from "connect-timeout";
-import { estateConfig, buildLoopUrl, fetchLoop, filterResults, lookupProperty, lookupWithFallback } from "./estate.js";
+import { unifiedLookup } from "./estate.js";
 
 const app = express();
 app.use(express.json());
-app.use(timeout("10s"));
+app.use(timeout("8s"));
 
-app.get("/healthz", (req, res) => {
+app.get("/healthz", (_req, res) => {
   res.send({ ok: true, service: "voice-proxy", env: process.env.NODE_ENV || "production" });
 });
 
-// Debug: show config (key redacted)
-app.get("/debug/estate-config", (req, res) => {
-  const cfg = estateConfig();
-  res.send({
-    baseUrl: cfg.baseUrl,
-    keyHeader: cfg.keyHeader,
-    timeout_ms: cfg.timeout_ms,
-    has_key: cfg.has_key
-  });
-});
-
-// Debug: call Loop raw using current env + args
-app.post("/debug/loop/raw", async (req, res) => {
-  try {
-    const { street = "", town = "", postcode = "", market = "sales", pageSize = 50 } = req.body || {};
-    const url = buildLoopUrl({ street, town, postcode, market, pageSize });
-    const r = await fetchLoop(url);
-    res.send({ ok: r.ok, status: r.status, url: r.url, size: r.size, sample: r.sample });
-  } catch (e) {
-    res.status(500).send({ ok: false, error: String(e) });
-  }
-});
-
-// Tool: strict lookup (no fallback)
-app.post("/tools/lookup_property", async (req, res) => {
-  try {
-    const { street = "", town = "", postcode = "", market = "sales", pageSize = 50 } = req.body || {};
-    const { url, filtered } = await lookupProperty({ street, town, postcode, market, pageSize });
-    res.send({ ok: true, matched: filtered.length, properties: filtered, tool_success: true, source_url: url, took_ms: 0 });
-  } catch (e) {
-    res.status(500).send({ ok: false, matched: 0, properties: [], tool_success: false, error: "lookup_property_failed" });
-  }
-});
-
-// Tool: “smart” route for Lee — tries lettings then sales
+// SMART LOOKUP for Lee (query both markets; fuzzy; price-aware)
 app.post("/tools/route_call", async (req, res) => {
   try {
-    const { street = "", town = "", postcode = "" } = req.body || {};
-    const out = await lookupWithFallback({ street, town, postcode });
-    const response = {
+    const { street = "", town = "", postcode = "", price = "" } = req.body || {};
+    if (!street || !town) return res.status(400).send({ ok: false, error: "need street and town" });
+
+    const out = await unifiedLookup({ street, town, postcode, price });
+    const props = out.candidates.map(p => ({
+      refId: p.refId,
+      address: p.address,
+      street: p.street,
+      town: p.town,
+      postcode: p.postcode,
+      propertyTypeText: p.propertyTypeText,
+      price: p.price,
+      market: p.market,
+      teamEmail: p.teamEmail,
+      teamPhone: p.teamPhone,
+      responsibleAgentName: p.responsibleAgentName
+    }));
+
+    // Hints for Lee
+    const need_market_choice = out.sales_count > 0 && out.lettings_count > 0;
+    const prices = Array.from(new Set(props.map(p => p.price).filter(Boolean))).sort((a,b) => a - b);
+
+    res.send({
       ok: true,
-      market_used: out.market,
-      matched: out.properties.length,
-      properties: out.properties,
-      note: out.note,
-      tool_success: true,
-      source_url: out.source_url
-    };
-
-    // For voice agent: if 0, ask the caller to clarify sales vs lettings
-    if (out.properties.length === 0) {
-      response.next_action = "ask_clarify_market";
-      response.ask = `I couldn't find a lettings listing at ${street}, ${town}${postcode ? " " + postcode : ""}. Is this for sales or lettings?`;
-    }
-
-    res.send(response);
+      matched: props.length,
+      properties: props.slice(0, 10),
+      markets_present: out.markets_present,
+      need_market_choice,
+      price_options: prices.slice(0, 4)
+    });
   } catch (e) {
-    res.status(500).send({ ok: false, matched: 0, properties: [], tool_success: false, error: "route_call_failed" });
+    res.status(500).send({ ok: false, error: "lookup_failed" });
+  }
+});
+
+// STRICT lookup when Lee knows the market
+app.post("/tools/lookup_property", async (req, res) => {
+  try {
+    const { street = "", town = "", postcode = "", market = "sales", price = "" } = req.body || {};
+    // constrain by market after unified
+    const out = await unifiedLookup({ street, town, postcode, price });
+    const props = out.candidates.filter(p => p.market === market).map(p => ({
+      refId: p.refId, address: p.address, street: p.street, town: p.town, postcode: p.postcode,
+      propertyTypeText: p.propertyTypeText, price: p.price, market: p.market,
+      teamEmail: p.teamEmail, teamPhone: p.teamPhone, responsibleAgentName: p.responsibleAgentName
+    }));
+    res.send({ ok: true, matched: props.length, properties: props.slice(0, 10) });
+  } catch {
+    res.status(500).send({ ok: false, error: "lookup_failed" });
   }
 });
 
