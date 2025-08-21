@@ -7,12 +7,12 @@ const app = express();
 app.use(express.json());
 app.use(timeout("10s"));
 
-app.get("/healthz", (req, res) => {
+app.get("/healthz", (_req, res) => {
   res.send({ ok: true, service: "voice-proxy", env: process.env.NODE_ENV || "production" });
 });
 
-// DEBUG: show effective config
-app.get("/debug/estate-config", (req, res) => {
+// DEBUG: show effective config (no key value returned)
+app.get("/debug/estate-config", (_req, res) => {
   const cfg = estateConfig();
   res.send({
     baseUrl: cfg.baseUrl,
@@ -28,7 +28,7 @@ app.post("/debug/loop/raw", async (req, res) => {
   const url = buildLoopUrl({ street, town, postcode, market, pageSize });
   try {
     const r = await fetchLoop(url);
-    res.send({ ok: r.ok, status: r.status, url: r.url, size: r.size, sample: r.sample });
+    res.send({ ok: r.ok, status: r.status, url: r.url, size: r.size, sample: Array.isArray(r.sample?.results) ? r.sample.results.slice(0, 2) : r.sample });
   } catch (e) {
     res.status(500).send({ ok: false, error: String(e) });
   }
@@ -45,7 +45,7 @@ app.post("/tools/lookup_property", async (req, res) => {
     }
     const filtered = filterResults(r.sample, { street, town });
     res.send({ ok: true, matched: filtered.length, properties: filtered, tool_success: true, source_url: r.url, took_ms: 0 });
-  } catch (e) {
+  } catch {
     res.status(500).send({ ok: false, tool_success: false, error: "lookup_property_failed" });
   }
 });

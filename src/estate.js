@@ -55,17 +55,17 @@ export async function fetchLoop(url) {
     } catch {
       json = { raw: text };
     }
-    return { ok: r.ok, status: r.status, url, size: text.length, sample: json.results || json.properties || json };
+    return { ok: r.ok, status: r.status, url: r.url || url, size: text.length, sample: json };
   } finally {
     clearTimeout(timeout);
   }
 }
 
 export function filterResults(json, { street = "", town = "" } = {}) {
-  const s = street.toLowerCase();
-  const t = town.toLowerCase();
-  const props = json.results || json.properties || [];
-  const filtered = props.filter(r => {
+  const s = (street || "").toLowerCase();
+  const t = (town || "").toLowerCase();
+  const rows = Array.isArray(json?.results) ? json.results : [];
+  const filtered = rows.filter(r => {
     const addr = [
       r.propertyStreet || "",
       r.propertyTown || "",
