@@ -11,8 +11,8 @@ app.get("/healthz", (_req, res) => {
   res.send({ ok: true, service: "voice-proxy", env: process.env.NODE_ENV || "production" });
 });
 
-// Smart route: parallel sales+lettings, fuzzy, price-aware.
-// Returns { ok:false, transient:true } on timeouts so Lee fills instead of failing.
+// Smart route: parallel sales+lettings, fuzzy street/town, price-aware,
+// returns { ok:false, transient:true } on timeouts so the agent fills (no dead air) and DOES NOT count a failure.
 app.post("/tools/route_call", async (req, res) => {
   try {
     const { street = "", town = "", postcode = "", price = "" } = req.body || {};
@@ -35,7 +35,6 @@ app.post("/tools/route_call", async (req, res) => {
     }));
 
     if (properties.length === 0 && out.transient) {
-      // tell Lee: keep talking, don't count as failure
       return res.send({ ok: false, transient: true, matched: 0 });
     }
 
@@ -52,13 +51,13 @@ app.post("/tools/route_call", async (req, res) => {
       need_market_choice,
       price_options
     });
-  } catch (e) {
-    // non-transient failure
+  } catch {
+    // non-transient error → a real failure the agent can count
     res.status(200).send({ ok: false, transient: false, error: "lookup_failed" });
   }
 });
 
-// Strict by market (optional if you still use it)
+// Strict-by-market route (optional if you still use it)
 app.post("/tools/lookup_property", async (req, res) => {
   try {
     const { street = "", town = "", postcode = "", price = "", market = "sales" } = req.body || {};
@@ -66,13 +65,23 @@ app.post("/tools/lookup_property", async (req, res) => {
     const filtered = out.candidates
       .filter(p => p.market === market)
       .map(p => ({
-        refId: p.refId, address: p.address, street: p.street, town: p.town, postcode: p.postcode,
-        propertyTypeText: p.propertyTypeText, price: p.price, market: p.market,
-        teamEmail: p.teamEmail, teamPhone: p.teamPhone, responsibleAgentName: p.responsibleAgentName
+        refId: p.refId,
+        address: p.address,
+        street: p.street,
+        town: p.town,
+        postcode: p.postcode,
+        propertyTypeText: p.propertyTypeText,
+        price: p.price,
+        market: p.market,
+        teamEmail: p.teamEmail,
+        teamPhone: p.teamPhone,
+        responsibleAgentName: p.responsibleAgentName
       }));
+
     if (filtered.length === 0 && out.transient) {
       return res.send({ ok: false, transient: true, matched: 0 });
     }
+
     res.send({ ok: true, matched: filtered.length, properties: filtered.slice(0, 10) });
   } catch {
     res.status(200).send({ ok: false, transient: false, error: "lookup_failed" });
