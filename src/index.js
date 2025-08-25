@@ -11,8 +11,9 @@ app.get("/healthz", (_req, res) => {
   res.send({ ok: true, service: "voice-proxy", env: process.env.NODE_ENV || "production" });
 });
 
-// Smart route: parallel sales+lettings, fuzzy street/town, price-aware,
-// returns { ok:false, transient:true } on timeouts so the agent fills (no dead air) and DOES NOT count a failure.
+// Smart route: fast-first sales (1.2s), then full parallel sales+lettings (2.5s),
+// fuzzy town/street + price narrow, town-only fallback.
+// Returns { ok:false, transient:true } on timeout so Lee fills instead of failing.
 app.post("/tools/route_call", async (req, res) => {
   try {
     const { street = "", town = "", postcode = "", price = "" } = req.body || {};
@@ -38,7 +39,7 @@ app.post("/tools/route_call", async (req, res) => {
       return res.send({ ok: false, transient: true, matched: 0 });
     }
 
-    const need_market_choice = out.sales_count > 0 && out.lettings_count > 0;
+    const need_market_choice = properties.some(p => p.market === "sales") && properties.some(p => p.market === "lettings");
     const price_options = Array.from(new Set(properties.map(p => p.price).filter(Boolean)))
       .sort((a, b) => a - b)
       .slice(0, 4);
@@ -52,7 +53,6 @@ app.post("/tools/route_call", async (req, res) => {
       price_options
     });
   } catch {
-    // non-transient error → a real failure the agent can count
     res.status(200).send({ ok: false, transient: false, error: "lookup_failed" });
   }
 });
