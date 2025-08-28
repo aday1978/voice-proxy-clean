@@ -10,8 +10,9 @@
     "node": ">=20"
   },
   "dependencies": {
-    "express": "^4.19.2",
     "connect-timeout": "^1.9.0",
-    "node-fetch": "^3.3.2"
+    "express": "^4.19.2",
+    "node-fetch": "^3.3.2",
+    "nodemailer": "^7.0.5"
   }
 }
