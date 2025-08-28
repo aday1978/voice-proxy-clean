@@ -24,6 +24,7 @@ const norm = (s) =>
     .replace(/\s+/g, " ")
     .trim();
 
+// Levenshtein edit distance
 const lev = (a, b) => {
   a = norm(a); b = norm(b);
   const m = Array.from({ length: a.length + 1 }, () => []);
@@ -41,7 +42,7 @@ const lev = (a, b) => {
   return m[a.length][b.length];
 };
 
-// Soundex for “tilehouse” vs “tiehouse”
+// Soundex (English-ish) to catch “tilehouse” vs “tiehouse”
 const soundex = (s) => {
   s = (s || "").toUpperCase().replace(/[^A-Z]/g, "");
   if (!s) return "";
@@ -69,12 +70,12 @@ const streetFuzzyHit = (want, got) => {
   const w = norm(want), g = norm(got);
   if (!w || !g) return false;
   if (g.includes(w)) return true;
-  if (lev(w, g) <= 2) return true;
-  if (soundex(w) === soundex(g)) return true;
+  if (lev(w, g) <= 2) return true;            // tilehouse ↔ tiehouse
+  if (soundex(w) === soundex(g)) return true; // phonetic catch
   return false;
 };
 
-// price within ±12% or ±£15k
+// price within ±12% or ±£15k (whichever wider)
 const priceClose = (want, got) => {
   if (!want || !got) return true;
   const w = +String(want).replace(/[^\d]/g, "") || 0;
@@ -154,6 +155,13 @@ function filterCandidates(list, { street, town, price }) {
   return candidates;
 }
 
+function pack(candidates, transient=false){
+  const sales_count     = candidates.filter(c => c.market === "sales").length;
+  const lettings_count  = candidates.filter(c => c.market === "lettings").length;
+  const markets_present = Array.from(new Set(candidates.map(c => c.market)));
+  return { candidates, markets_present, sales_count, lettings_count, transient };
+}
+
 // ---------- unified lookup with fast-first + fallback ----------
 export async function unifiedLookup({ street = "", town = "", postcode = "", price = "" } = {}) {
   if (!KEY) throw new Error("ESTATE_API_KEY missing");
@@ -168,9 +176,8 @@ export async function unifiedLookup({ street = "", town = "", postcode = "", pri
     salesURL({ street, town, postcode, pageSize: FAST_PAGE }),
     FAST_MS
   );
-  let list = [];
   if (fastSales.ok && fastSales.results.length) {
-    list = fastSales.results.map(r => simplify(r, "sales"));
+    const list = fastSales.results.map(r => simplify(r, "sales"));
     // dedupe + filter immediately
     const seen = new Set(); const de = [];
     for (const p of list) { const k = p.refId || p.address; if (!seen.has(k)) { seen.add(k); de.push(p); } }
@@ -178,7 +185,7 @@ export async function unifiedLookup({ street = "", town = "", postcode = "", pri
     if (candidates.length) {
       const out = pack(candidates);
       setCache(cacheKey, out);
-      return out; // early success: instant response
+      return out; // early success
     }
   }
 
@@ -223,11 +230,4 @@ export async function unifiedLookup({ street = "", town = "", postcode = "", pri
   const out = pack(candidates, anyTransient);
   setCache(cacheKey, out);
   return out;
-}
-
-function pack(candidates, transient=false){
-  const sales_count     = candidates.filter(c => c.market === "sales").length;
-  const lettings_count  = candidates.filter(c => c.market === "lettings").length;
-  const markets_present = Array.from(new Set(candidates.map(c => c.market)));
-  return { candidates, markets_present, sales_count, lettings_count, transient };
 }
